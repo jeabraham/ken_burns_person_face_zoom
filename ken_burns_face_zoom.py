@@ -226,15 +226,21 @@ def initial_zoom(img_size, face, out_size, face_fraction, max_upscale):
     return max(1.0, min(zoom, base_w * max_upscale / out_w))
 
 
-def crop_window(img_w, img_h, center, zoom, aspect):
-    """Return integer (x0, y0, w, h) of a window with the given aspect ratio,
-    centred on `center` as far as possible while staying inside the image."""
+def crop_window_f(img_w, img_h, center, zoom, aspect):
+    """Like crop_window but returns float (x0, y0, w, h) for sub-pixel rendering."""
     base_w = min(img_w, img_h * aspect)
     base_h = base_w / aspect
     w = max(2.0, base_w / zoom)
     h = max(2.0, base_h / zoom)
     x0 = min(max(center[0] - w / 2, 0), img_w - w)
     y0 = min(max(center[1] - h / 2, 0), img_h - h)
+    return x0, y0, w, h
+
+
+def crop_window(img_w, img_h, center, zoom, aspect):
+    """Return integer (x0, y0, w, h) of a window with the given aspect ratio,
+    centred on `center` as far as possible while staying inside the image."""
+    x0, y0, w, h = crop_window_f(img_w, img_h, center, zoom, aspect)
     return int(round(x0)), int(round(y0)), max(2, int(round(w))), max(2, int(round(h)))
 
 
@@ -260,20 +266,42 @@ def prepare_image(img, face, blur):
     return (img * mask + blurred * (1 - mask)).astype(np.uint8)
 
 
-def render_frames(img, face, n_frames, size, zoom_percent, start_zoom=1.0, blur=0.0):
-    """Yield n_frames BGR frames of the given size zooming towards the face."""
+def render_frames(img, face, n_frames, size, zoom_percent, start_zoom=1.0, blur=0.0, upsample=True):
+    """Yield n_frames BGR frames of the given size zooming towards the face.
+
+    The crop window moves linearly from its start to its end position, so pan and
+    zoom finish together. Frames are rendered with sub-pixel precision (no integer
+    rounding of the crop) to avoid jerky motion; `upsample` XX"""
     out_w, out_h = size
     h, w = img.shape[:2]
     if face is None:
         face = (w // 2 - 1, h // 2 - 1, 2, 2)
     center = (face[0] + face[2] / 2, face[1] + face[3] / 2)
     src = prepare_image(img, face, blur)
+    aspect = out_w / out_h
+    start = crop_window_f(w, h, center, zoom_factor(0.0, zoom_percent, start_zoom), aspect)
+    end = crop_window_f(w, h, center, zoom_factor(1.0, zoom_percent, start_zoom), aspect)
+    # Crop to the area that will ever be shown, so scaling never touches the rest.
+    ux0 = max(0, int(min(start[0], end[0])) - 2)
+    uy0 = max(0, int(min(start[1], end[1])) - 2)
+    ux1 = min(w, int(np.ceil(max(start[0] + start[2], end[0] + end[2]))) + 2)
+    uy1 = min(h, int(np.ceil(max(start[1] + start[3], end[1] + end[3]))) + 2)
+    src = src[uy0:uy1, ux0:ux1]
+    magnification = out_w / end[2]  # output pixels per source pixel at the end
+    if magnification >= 1.0:
+        f = 1.5 * magnification if upsample else 1.0
+    else:
+        f = out_w / start[2]  # source is larger than the output: shrink once, no aliasing
+    if f != 1.0:
+        src = cv2.resize(src, None, fx=f, fy=f,
+                         interpolation=cv2.INTER_AREA if f < 1.0 else cv2.INTER_CUBIC)
     for i in range(n_frames):
         t = i / (n_frames - 1) if n_frames > 1 else 1.0
-        x0, y0, cw, ch = crop_window(w, h, center, zoom_factor(t, zoom_percent, start_zoom),
-                                     out_w / out_h)
-        crop = src[y0:y0 + ch, x0:x0 + cw]
-        yield cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_CUBIC)
+        x0, y0, cw, ch = ((1 - t) * a + t * b for a, b in zip(start, end))
+        sx, sy = out_w / (cw * f), out_h / (ch * f)
+        m = np.float64([[sx, 0, -(x0 - ux0) * f * sx], [0, sy, -(y0 - uy0) * f * sy]])
+        yield cv2.warpAffine(src, m, (out_w, out_h), flags=cv2.INTER_CUBIC,
+                             borderMode=cv2.BORDER_REPLICATE)
 
 
 # Progressively more aggressive passes used to find a known person:
@@ -302,7 +330,7 @@ def find_person(img, features, aggressive=True):
 
 def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, zoom_percent=30.0,
                 start_face_size=25.0, max_upscale=1.5, blur=0.0, keep_missing=False,
-                aggressive=True):
+                aggressive=True, upsample=True):
     writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     if not writer.isOpened():
         raise RuntimeError(f"cannot open video writer for {output}")
@@ -327,7 +355,7 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
             else:
                 start_zoom = initial_zoom((img.shape[1], img.shape[0]), face, size,
                                           start_face_size, max_upscale)
-            for frame in render_frames(img, face, n_frames, size, zoom_percent, start_zoom, blur):
+            for frame in render_frames(img, face, n_frames, size, zoom_percent, start_zoom, blur, upsample):
                 writer.write(frame)
             used += 1
     except KeyboardInterrupt:
@@ -360,6 +388,8 @@ def parse_args(argv=None):
     p.add_argument("--person", type=int, help="number of the person to follow (skips the prompt)")
     p.add_argument("--people-sheet", default="people.jpg",
                    help="where to write the numbered thumbnails of people found (default people.jpg)")
+    p.add_argument("--no-upsample", action="store_true",
+                   help="do not pre-enlarge the cropped area (faster, slightly less smooth)")
     p.add_argument("--blur", type=float, default=0.0,
                    help="blur the background; strength as percent of image size, e.g. 2 (default 0 = off)")
     p.add_argument("--seconds", type=float, default=3.0, help="seconds per image (default 3)")
@@ -385,7 +415,7 @@ def main(argv=None):
     features = choose_person(scan_people(paths, args.scan), args.person, args.people_sheet)
     used = build_video(paths, args.output, features, (args.width, args.height), args.fps, args.seconds,
                 args.zoom, args.start_face_size, args.max_upscale, args.blur,
-                args.keep_missing, not args.no_aggressive)
+                args.keep_missing, not args.no_aggressive, not args.no_upsample)
     print(f"wrote {args.output} from {used} of {len(paths)} images")
     return 0
 
