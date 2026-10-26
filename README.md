@@ -17,3 +17,11 @@ Options:
 - `--fps`, `--width`, `--height`: output video settings
 
 Images with no detected face zoom on the image centre.
+
+## Setup with make
+
+```
+make setup   # creates ./venv and installs requirements.txt
+make run     # uses the settings in setup.env (images are read from ./images)
+make test
+```
