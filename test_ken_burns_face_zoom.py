@@ -12,6 +12,47 @@ def test_zoom_factor():
     assert kb.zoom_factor(1, 50, 2.0) == pytest.approx(3.0)
 
 
+def test_output_resolution_and_quality_options():
+    args = kb.parse_args(["photos", "--resolution", "1080p", "--quality", "85"])
+    assert (args.width, args.height) == (1920, 1080)
+    assert args.quality == 85
+
+    args = kb.parse_args(["photos", "--width", "640", "--height", "360"])
+    assert (args.width, args.height) == (640, 360)
+
+    with pytest.raises(SystemExit):
+        kb.parse_args(["photos", "--resolution", "720p", "--width", "640"])
+    with pytest.raises(SystemExit):
+        kb.parse_args(["photos", "--quality", "101"])
+    with pytest.raises(SystemExit):
+        kb.parse_args(["photos", "--width", "0"])
+
+
+def test_build_video_applies_quality_option(monkeypatch):
+    class Writer:
+        def __init__(self):
+            self.quality = None
+            self.supports_quality = True
+
+        def isOpened(self):
+            return True
+
+        def set(self, prop, value):
+            self.quality = (prop, value)
+            return self.supports_quality
+
+        def release(self):
+            pass
+
+    writer = Writer()
+    monkeypatch.setattr(kb.cv2, "VideoWriter", lambda *args: writer)
+    kb.build_video([], "out.mp4", [], quality=85)
+    assert writer.quality == (cv2.VIDEOWRITER_PROP_QUALITY, 85)
+    writer.supports_quality = False
+    with pytest.raises(RuntimeError, match="does not support --quality"):
+        kb.build_video([], "out.mp4", [], quality=85)
+
+
 def test_initial_zoom_depends_on_face_size():
     out = (1280, 720)
     # solo portrait: face already fills >25% of frame -> no initial zoom
