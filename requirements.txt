@@ -1,0 +1,3 @@
+opencv-python-headless<5
+numpy
+pillow>=13.0.0
