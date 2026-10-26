@@ -14,7 +14,7 @@ $(VENV)/.installed: requirements.txt
 
 run: setup
 	$(PY) ken_burns_face_zoom.py $(INPUT_DIR) -o $(OUTPUT) --order $(ORDER) --zoom $(ZOOM) \
-		--start-zoom $(START_ZOOM) --blur $(BLUR) --seconds $(SECONDS_PER_IMAGE)
+		--start-face-size $(START_FACE_SIZE) --max-upscale $(MAX_UPSCALE) --scan $(SCAN) $(if $(PERSON),--person $(PERSON)) --blur $(BLUR) --seconds $(SECONDS_PER_IMAGE)
 
 test: setup
 	$(PY) -m pytest -q
