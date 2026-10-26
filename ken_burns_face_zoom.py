@@ -24,6 +24,13 @@ MODELS = {
 }
 MATCH_THRESHOLD = 0.363  # SFace cosine similarity threshold for "same person"
 DETECT_MAX_SIDE = 1280
+RESOLUTIONS = {
+    "480p": (854, 480),
+    "720p": (1280, 720),
+    "1080p": (1920, 1080),
+    "1440p": (2560, 1440),
+    "2160p": (3840, 2160),
+}
 
 
 def load_image(path):
@@ -330,10 +337,13 @@ def find_person(img, features, aggressive=True):
 
 def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, zoom_percent=30.0,
                 start_face_size=25.0, max_upscale=1.5, blur=0.0, keep_missing=False,
-                aggressive=True, upsample=True):
+                aggressive=True, upsample=True, quality=None):
     writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     if not writer.isOpened():
         raise RuntimeError(f"cannot open video writer for {output}")
+    if quality is not None and not writer.set(cv2.VIDEOWRITER_PROP_QUALITY, quality):
+        writer.release()
+        raise RuntimeError("video writer backend does not support --quality")
     n_frames = max(1, int(round(seconds * fps)))
     total = len(paths)
     used = 0
@@ -394,15 +404,28 @@ def parse_args(argv=None):
                    help="blur the background; strength as percent of image size, e.g. 2 (default 0 = off)")
     p.add_argument("--seconds", type=float, default=3.0, help="seconds per image (default 3)")
     p.add_argument("--fps", type=int, default=30)
-    p.add_argument("--width", type=int, default=1280)
-    p.add_argument("--height", type=int, default=720)
+    p.add_argument("--resolution", choices=RESOLUTIONS,
+                   help="output resolution preset: 480p, 720p, 1080p, 1440p or 2160p")
+    p.add_argument("--width", type=int, help="custom output width (default 1280)")
+    p.add_argument("--height", type=int, help="custom output height (default 720)")
+    p.add_argument("--quality", type=int,
+                   help="encoder quality from 0 (lowest) to 100 (highest); backend-dependent")
     args = p.parse_args(argv)
+    if args.resolution and (args.width is not None or args.height is not None):
+        p.error("--resolution cannot be combined with --width or --height")
+    if args.resolution:
+        args.width, args.height = RESOLUTIONS[args.resolution]
+    else:
+        args.width = 1280 if args.width is None else args.width
+        args.height = 720 if args.height is None else args.height
     if args.zoom < 0 or args.start_face_size < 0 or args.blur < 0:
         p.error("--zoom, --start-face-size and --blur must be >= 0")
     if args.max_upscale < 1 or args.scan < 1:
         p.error("--max-upscale must be >= 1 and --scan >= 1")
     if args.seconds <= 0 or args.fps <= 0 or args.width <= 0 or args.height <= 0:
         p.error("--seconds, --fps, --width and --height must be > 0")
+    if args.quality is not None and not 0 <= args.quality <= 100:
+        p.error("--quality must be between 0 and 100")
     return args
 
 
@@ -415,7 +438,7 @@ def main(argv=None):
     features = choose_person(scan_people(paths, args.scan), args.person, args.people_sheet)
     used = build_video(paths, args.output, features, (args.width, args.height), args.fps, args.seconds,
                 args.zoom, args.start_face_size, args.max_upscale, args.blur,
-                args.keep_missing, not args.no_aggressive, not args.no_upsample)
+                args.keep_missing, not args.no_aggressive, not args.no_upsample, args.quality)
     print(f"wrote {args.output} from {used} of {len(paths)} images")
     return 0
 

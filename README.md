@@ -22,7 +22,10 @@ Options:
 - `--blur STRENGTH`: blur everything except the subject; percent of image size (default off)
 - `--seconds N`: seconds per image (default 3)
 - `--order random|date|name`: random (`--seed` optional), EXIF capture date, or filename
-- `--fps`, `--width`, `--height`: output video settings
+- `--resolution 480p|720p|1080p|1440p|2160p`: choose a 16:9 output size (default 720p)
+- `--width`, `--height`: set a custom output resolution instead of `--resolution`
+- `--fps`: output frame rate (default 30)
+- `--quality 0-100`: request lower-to-higher encoder quality; support depends on the video writer backend
 
 Images with no detected face zoom on the image centre.
 
