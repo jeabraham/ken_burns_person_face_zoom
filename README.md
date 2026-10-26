@@ -5,7 +5,8 @@ people; you pick which person to follow (from numbered thumbnails in
 `people.jpg`, or with `--person K`). In every image that person's face is
 found and a Ken Burns zoom is applied, centred on it. Face detection and
 recognition use OpenCV's YuNet and SFace models, downloaded (checksum-verified)
-into `models/` on first run. Images where the person isn't found zoom on the centre.
+into `models/` on first run. Images where the person isn't found are excluded from the video (use `--keep-missing` to keep them, zoomed on the centre).
+Because the face being looked for is known, the search escalates when the strict pass fails: lower detector confidence, larger detection size for small faces, a mirrored image for turned heads, and a relaxed match threshold. `--no-aggressive` disables this.
 
 ```
 pip install -r requirements.txt

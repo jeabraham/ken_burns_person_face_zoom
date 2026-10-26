@@ -65,7 +65,7 @@ def test_render_and_blur():
 
 def test_main_creates_video(tmp_path, monkeypatch):
     feat = np.array([1.0, 0.0])
-    monkeypatch.setattr(kb, "detect_faces", lambda img: [((150, 100, 60, 60), feat)])
+    monkeypatch.setattr(kb, "detect_faces", lambda img, *a, **k: [((150, 100, 60, 60), feat)])
     img = np.full((300, 400, 3), 128, np.uint8)
     cv2.imwrite(str(tmp_path / "a.png"), img)
     out = tmp_path / "o.mp4"
@@ -73,3 +73,31 @@ def test_main_creates_video(tmp_path, monkeypatch):
                     "--width", "160", "--height", "90", "--person", "1",
                     "--people-sheet", str(tmp_path / "people.jpg")]) == 0
     assert out.stat().st_size > 0
+
+
+def test_find_person_escalates_and_missing_excluded(tmp_path, monkeypatch):
+    a, b = np.array([1.0, 0.0]), np.array([0.0, 1.0])
+    calls = []
+
+    def fake_detect(img, score=0.8, max_side=1280, flip=False):
+        calls.append(flip)
+        return [((1, 2, 3, 4), a)] if flip else [((5, 6, 7, 8), b)]
+
+    monkeypatch.setattr(kb, "detect_faces", fake_detect)
+    img = np.zeros((10, 10, 3), np.uint8)
+    assert kb.find_person(img, [a]) == (1, 2, 3, 4)
+    assert True in calls and calls[0] is False
+    assert kb.find_person(img, [a], aggressive=False) is None
+
+    cv2.imwrite(str(tmp_path / "a.png"), np.full((300, 400, 3), 128, np.uint8))
+    out = tmp_path / "o.mp4"
+    args = [str(tmp_path), "-o", str(out), "--seconds", "0.5", "--fps", "4", "--width", "160",
+            "--height", "90", "--person", "1", "--people-sheet", str(tmp_path / "p.jpg")]
+    monkeypatch.setattr(kb, "scan_people", lambda paths, n: [{"features": [a], "thumb": img, "size": 1}])
+    monkeypatch.setattr(kb, "find_person", lambda *x, **k: None)
+    kb.main(args)
+    cap = cv2.VideoCapture(str(out))
+    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == 0
+    kb.main(args + ["--keep-missing"])
+    cap = cv2.VideoCapture(str(out))
+    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) > 0

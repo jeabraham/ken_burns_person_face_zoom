@@ -82,15 +82,21 @@ def model_path(key):
 _engine = {}
 
 
-def detect_faces(img):
+def detect_faces(img, score=0.8, max_side=DETECT_MAX_SIDE, flip=False):
     """Return a list of (box, feature) for every face; box is (x, y, w, h) in pixels
-    and feature is an identity embedding comparable with `similarity`."""
+    and feature is an identity embedding comparable with `similarity`.
+
+    score is the detector confidence threshold, max_side the longest side the image
+    is detected at, and flip mirrors the image first (boxes are mapped back)."""
     if not _engine:
         _engine["det"] = cv2.FaceDetectorYN.create(model_path("detector"), "", (320, 320), 0.8)
         _engine["rec"] = cv2.FaceRecognizerSF.create(model_path("recognizer"), "")
     det, rec = _engine["det"], _engine["rec"]
+    det.setScoreThreshold(score)
+    if flip:
+        img = cv2.flip(img, 1)
     h, w = img.shape[:2]
-    scale = min(1.0, DETECT_MAX_SIDE / max(h, w))
+    scale = min(1.0, max_side / max(h, w))
     small = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale)))) if scale < 1 else img
     det.setInputSize((small.shape[1], small.shape[0]))
     _, rows = det.detect(small)
@@ -103,6 +109,8 @@ def detect_faces(img):
         x, y = max(0, x), max(0, y)
         fw, fh = min(fw, w - x), min(fh, h - y)
         if fw > 1 and fh > 1:
+            if flip:
+                x = w - x - fw
             faces.append(((x, y, fw, fh), feature))
     return faces
 
@@ -267,8 +275,33 @@ def render_frames(img, face, n_frames, size, zoom_percent, start_zoom=1.0, blur=
         yield cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_CUBIC)
 
 
+# Progressively more aggressive passes used to find a known person:
+# (detector score, detection size, mirrored, match threshold)
+SEARCH_PASSES = [
+    (0.8, DETECT_MAX_SIDE, False, MATCH_THRESHOLD),
+    (0.5, DETECT_MAX_SIDE, False, MATCH_THRESHOLD - 0.05),
+    (0.5, 2 * DETECT_MAX_SIDE, False, MATCH_THRESHOLD - 0.05),
+    (0.4, DETECT_MAX_SIDE, True, MATCH_THRESHOLD - 0.08),
+    (0.3, 2 * DETECT_MAX_SIDE, True, MATCH_THRESHOLD - 0.08),
+]
+
+
+def find_person(img, features, aggressive=True):
+    """Locate the chosen person's face box in img, or None.
+
+    Since we know whose face we want, a weak match is accepted when stricter
+    searches fail: lower detector confidence, larger detection size (small faces),
+    mirrored image (profiles facing the other way) and a relaxed match threshold."""
+    for score, max_side, flip, threshold in SEARCH_PASSES[:None if aggressive else 1]:
+        box = pick_face(detect_faces(img, score, max_side, flip), features, threshold)
+        if box is not None:
+            return box
+    return None
+
+
 def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, zoom_percent=30.0,
-                start_face_size=25.0, max_upscale=1.5, blur=0.0):
+                start_face_size=25.0, max_upscale=1.5, blur=0.0, keep_missing=False,
+                aggressive=True):
     writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     if not writer.isOpened():
         raise RuntimeError(f"cannot open video writer for {output}")
@@ -280,8 +313,11 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
             except Exception as exc:
                 print(f"skipping {path}: {exc}", file=sys.stderr)
                 continue
-            face = pick_face(detect_faces(img), features)
+            face = find_person(img, features, aggressive)
             if face is None:
+                if not keep_missing:
+                    print(f"chosen person not found in {path.name}; excluding it", file=sys.stderr)
+                    continue
                 print(f"chosen person not found in {path.name}; zooming on image centre", file=sys.stderr)
                 start_zoom = 1.0
             else:
@@ -306,6 +342,11 @@ def parse_args(argv=None):
                         "zoomed in to this size, larger faces are left alone (default 25, 0 = off)")
     p.add_argument("--max-upscale", type=float, default=1.5,
                    help="max initial zoom, as a multiple of the output video's pixel resolution (default 1.5)")
+    p.add_argument("--keep-missing", action="store_true",
+                   help="keep images where the chosen person isn't found (zoom on the centre) "
+                        "instead of excluding them")
+    p.add_argument("--no-aggressive", action="store_true",
+                   help="only use the strict face search (faster, but misses turned-away/small faces)")
     p.add_argument("--scan", type=int, default=5,
                    help="number of images to scan for people to choose from (default 5)")
     p.add_argument("--person", type=int, help="number of the person to follow (skips the prompt)")
@@ -335,7 +376,8 @@ def main(argv=None):
         return 1
     features = choose_person(scan_people(paths, args.scan), args.person, args.people_sheet)
     build_video(paths, args.output, features, (args.width, args.height), args.fps, args.seconds,
-                args.zoom, args.start_face_size, args.max_upscale, args.blur)
+                args.zoom, args.start_face_size, args.max_upscale, args.blur,
+                args.keep_missing, not args.no_aggressive)
     print(f"wrote {args.output} from {len(paths)} images")
     return 0
 
