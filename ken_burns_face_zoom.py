@@ -145,7 +145,8 @@ def cluster_faces(faces, threshold=MATCH_THRESHOLD):
 def scan_people(paths, count):
     """Detect and cluster the people in the first `count` images."""
     faces = []
-    for path in paths[:count]:
+    for i, path in enumerate(paths[:count], 1):
+        print(f"scanning image {i} of {min(count, len(paths))}: {path.name}", file=sys.stderr)
         try:
             img = load_image(path)
         except Exception as exc:
@@ -306,8 +307,11 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
     if not writer.isOpened():
         raise RuntimeError(f"cannot open video writer for {output}")
     n_frames = max(1, int(round(seconds * fps)))
+    total = len(paths)
+    used = 0
     try:
-        for path in paths:
+        for i, path in enumerate(paths, 1):
+            print(f"image {i} of {total}: {path.name}", file=sys.stderr)
             try:
                 img = load_image(path)
             except Exception as exc:
@@ -325,8 +329,12 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
                                           start_face_size, max_upscale)
             for frame in render_frames(img, face, n_frames, size, zoom_percent, start_zoom, blur):
                 writer.write(frame)
+            used += 1
+    except KeyboardInterrupt:
+        print(f"\ninterrupted at image {i} of {total}; saving the video made so far", file=sys.stderr)
     finally:
         writer.release()
+    return used
 
 
 def parse_args(argv=None):
@@ -375,10 +383,10 @@ def main(argv=None):
         print("no images found", file=sys.stderr)
         return 1
     features = choose_person(scan_people(paths, args.scan), args.person, args.people_sheet)
-    build_video(paths, args.output, features, (args.width, args.height), args.fps, args.seconds,
+    used = build_video(paths, args.output, features, (args.width, args.height), args.fps, args.seconds,
                 args.zoom, args.start_face_size, args.max_upscale, args.blur,
                 args.keep_missing, not args.no_aggressive)
-    print(f"wrote {args.output} from {len(paths)} images")
+    print(f"wrote {args.output} from {used} of {len(paths)} images")
     return 0
 
 

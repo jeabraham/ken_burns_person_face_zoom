@@ -101,3 +101,25 @@ def test_find_person_escalates_and_missing_excluded(tmp_path, monkeypatch):
     kb.main(args + ["--keep-missing"])
     cap = cv2.VideoCapture(str(out))
     assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) > 0
+
+
+def test_ctrl_c_saves_partial_video(tmp_path, monkeypatch, capsys):
+    for n in ("a", "b", "c"):
+        cv2.imwrite(str(tmp_path / f"{n}.png"), np.full((90, 160, 3), 100, np.uint8))
+    paths = kb.find_images(tmp_path)
+    calls = []
+
+    def fake_find(img, features, aggressive):
+        calls.append(1)
+        if len(calls) == 3:
+            raise KeyboardInterrupt
+        return (60, 30, 30, 30)
+
+    monkeypatch.setattr(kb, "find_person", fake_find)
+    out = tmp_path / "o.mp4"
+    used = kb.build_video(paths, out, [np.ones(2)], size=(160, 90), fps=4, seconds=1)
+    assert used == 2
+    cap = cv2.VideoCapture(str(out))
+    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == 8
+    err = capsys.readouterr().err
+    assert "image 2 of 3" in err and "interrupted at image 3 of 3" in err

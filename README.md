@@ -33,3 +33,6 @@ make setup   # creates ./venv and installs requirements.txt
 make run     # uses the settings in setup.env (images are read from ./images)
 make test
 ```
+
+Progress is logged per image (e.g. `image 20 of 245`). Press Ctrl-C while the video is being
+rendered to stop early: the video made so far is still saved.
