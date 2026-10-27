@@ -76,7 +76,7 @@ def test_initial_zoom_depends_on_face_size():
     assert kb.initial_zoom((4000, 3000), (1500, 800, 900, 1000), out, 25, 1.5) == 1.0
     # distant face in a group shot -> zoomed in so the face is ~25% of frame height
     z = kb.initial_zoom((4000, 3000), (1500, 800, 200, 200), out, 25, 1.5)
-    assert z == pytest.approx(0.25 * 2250 / 200)
+    assert z == pytest.approx(0.25 * 720 / (200 * (720 / 3000)))
     assert kb.initial_zoom((4000, 3000), (1500, 800, 100, 100), out, 0, 1.5) == 1.0
 
 
@@ -89,7 +89,19 @@ def test_initial_zoom_capped_by_resolution():
 
 def test_full_chest_zoom_fits_the_complete_target_without_an_upscale_cap():
     chest = (1000, 700, 300, 500)
-    assert kb.full_chest_zoom((4000, 3000), chest, (1280, 720)) == pytest.approx(2250 / 500)
+    assert kb.full_chest_zoom((4000, 3000), chest, (1280, 720)) == pytest.approx((720 / 500) / (720 / 3000))
+
+
+def test_torso_box_spans_from_head_to_above_knees():
+    landmarks = [SimpleNamespace(x=0.5, y=0.5, visibility=0.0) for _ in range(33)]
+    for index, x, y in ((0, 0.5, 0.15), (11, 0.35, 0.3), (12, 0.65, 0.3),
+                        (23, 0.4, 0.6), (24, 0.6, 0.6), (25, 0.4, 0.9), (26, 0.6, 0.9)):
+        landmarks[index] = SimpleNamespace(x=x, y=y, visibility=1.0)
+    result = SimpleNamespace(pose_landmarks=[landmarks])
+    box = kb.torso_box((200, 100, 50, 60), (result, (0, 0, 500, 500)))
+    assert box[1] < 100
+    assert box[1] + box[3] < 450
+    assert box[3] > 300
 
 
 def test_pose_must_be_anchored_to_the_selected_face():
@@ -135,6 +147,13 @@ def test_crop_window_stays_inside_and_aspect():
     assert w / h == pytest.approx(16 / 9, rel=0.02)
 
 
+def test_opening_window_keeps_head_visible_when_torso_does_not_fit():
+    torso = (300, 100, 300, 1200)
+    window = kb.opening_window(1000, 2000, torso, 1, 16 / 9)
+    assert window[1] <= torso[1] <= window[1] + window[3]
+    assert not kb.target_fits_window(torso, window)
+
+
 def test_find_images_orders(tmp_path):
     for n in ("b.jpg", "A.png", "c.txt"):
         (tmp_path / n).write_bytes(b"x")
@@ -150,6 +169,14 @@ def test_render_and_blur():
     frames = list(kb.render_frames(img, (250, 150, 80, 80), 5, (320, 180), 40, 1.2, blur=3,
                                    blur_mask=mask))
     assert len(frames) == 5 and frames[0].shape == (180, 320, 3)
+
+
+def test_scale_to_fit_zoom_one_letterboxes_without_cropping():
+    img = np.full((200, 100, 3), 255, np.uint8)
+    frame = kb.render_view(img, (160, 90), 1.0, (50, 100))
+    assert frame.shape == (90, 160, 3)
+    assert np.all(frame[:, :55] == 0)
+    assert np.all(frame[:, 60:100] == 255)
 
 
 def test_main_creates_video(tmp_path, monkeypatch):
@@ -209,7 +236,8 @@ def test_ctrl_c_saves_partial_video(tmp_path, monkeypatch, capsys):
     used = kb.build_video(paths, out, [np.ones(2)], size=(160, 90), fps=4, seconds=1, target="face")
     assert used == 2
     cap = cv2.VideoCapture(str(out))
-    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == 8
+    # Each source gets its 250 ms initial hold; the second also crossfades from the first.
+    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == 11
     err = capsys.readouterr().err
     assert "image 2 of 3" in err and "interrupted at image 3 of 3" in err
 

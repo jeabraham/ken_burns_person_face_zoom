@@ -35,6 +35,7 @@ RESOLUTIONS = {
     "1440p": (2560, 1440),
     "2160p": (3840, 2160),
 }
+TRANSITION_SECONDS = 0.25
 
 
 def load_image(path):
@@ -393,26 +394,72 @@ def animation_progress(t, settle_at=0.8):
 
 
 def initial_zoom(img_size, target, out_size, target_fraction, max_upscale):
-    """Zoom needed at the start so the target is `target_fraction` (percent) of the
-    frame height, never below 1 and never so deep that the crop has fewer than
-    out_width / max_upscale source pixels across."""
+    """Zoom relative to a letterboxed scale-to-fit image (1.0 shows all pixels)."""
     img_w, img_h = img_size
     out_w, out_h = out_size
-    aspect = out_w / out_h
-    base_w = min(img_w, img_h * aspect)
-    base_h = base_w / aspect
-    zoom = max(1.0, target_fraction / 100.0 * base_h / target[3]) if target_fraction > 0 else 1.0
-    return max(1.0, min(zoom, base_w * max_upscale / out_w))
+    fit_scale = min(out_w / img_w, out_h / img_h)
+    zoom = max(1.0, target_fraction / 100.0 * out_h / (target[3] * fit_scale)) if target_fraction > 0 else 1.0
+    return min(zoom, max_upscale / fit_scale)
 
 
 def full_chest_zoom(img_size, chest, out_size):
-    """Return the closest aspect-fitted crop that contains the complete chest."""
+    """Return the scale-to-fit-relative zoom that contains the complete chest."""
     img_w, img_h = img_size
     out_w, out_h = out_size
-    aspect = out_w / out_h
-    base_w = min(img_w, img_h * aspect)
-    base_h = base_w / aspect
-    return max(1.0, min(base_w / chest[2], base_h / chest[3]))
+    fit_scale = min(out_w / img_w, out_h / img_h)
+    return max(1.0, min(out_w / chest[2], out_h / chest[3]) / fit_scale)
+
+
+def chest_width_zoom(img_size, chest, out_size):
+    """Return the scale-to-fit-relative zoom that fills the output width with chest."""
+    img_w, img_h = img_size
+    out_w, out_h = out_size
+    fit_scale = min(out_w / img_w, out_h / img_h)
+    return max(1.0, out_w / (chest[2] * fit_scale))
+
+
+def torso_box(face, detection=None):
+    """Return a head-to-knees box for the opening frame of a chest zoom."""
+    x, y, fw, fh = face
+    fallback = (int(round(x - fw)), int(round(y - fh * 0.2)),
+                int(round(fw * 3)), int(round(fh * 5.2)))
+    if detection is None or not detection[0].pose_landmarks:
+        return fallback
+
+    result, (x0, y0, x1, y1) = detection
+    landmarks = result.pose_landmarks[0]
+
+    def point(index):
+        landmark = landmarks[index]
+        if landmark.visibility < 0.5:
+            return None
+        return np.array((x0 + landmark.x * (x1 - x0), y0 + landmark.y * (y1 - y0)))
+
+    head = [point(index) for index in (0, 2, 5, 7, 8)]
+    head = [p for p in head if p is not None]
+    left_shoulder, right_shoulder = point(11), point(12)
+    if not head or left_shoulder is None or right_shoulder is None:
+        return fallback
+    shoulders = (left_shoulder + right_shoulder) / 2
+    shoulder_width = float(np.linalg.norm(left_shoulder - right_shoulder))
+    left_hip, right_hip = point(23), point(24)
+    hips = (left_hip + right_hip) / 2 if left_hip is not None and right_hip is not None else None
+    knees = [point(index) for index in (25, 26)]
+    knees = [p for p in knees if p is not None]
+
+    top = min(y, *(p[1] for p in head)) - fh * 0.15
+    if knees:
+        torso_height = float(np.mean([p[1] for p in knees]) - shoulders[1])
+        bottom = float(np.mean([p[1] for p in knees]) - max(torso_height * 0.08, fh * 0.2))
+    elif hips is not None:
+        torso_height = float(np.linalg.norm(hips - shoulders))
+        bottom = hips[1] + torso_height * 0.7
+    else:
+        bottom = shoulders[1] + shoulder_width * 2.5
+    height = max(bottom - top, fh * 3)
+    center_x = shoulders[0] if hips is None else (shoulders[0] + hips[0]) / 2
+    width = max(shoulder_width * 2, fw * 3)
+    return (int(round(center_x - width / 2)), int(round(top)), int(round(width)), int(round(height)))
 
 
 def crop_window_f(img_w, img_h, center, zoom, aspect):
@@ -431,6 +478,22 @@ def crop_window(img_w, img_h, center, zoom, aspect):
     centred on `center` as far as possible while staying inside the image."""
     x0, y0, w, h = crop_window_f(img_w, img_h, center, zoom, aspect)
     return int(round(x0)), int(round(y0)), max(2, int(round(w))), max(2, int(round(h)))
+
+
+def opening_window(img_w, img_h, target, zoom, aspect):
+    """Return the opening crop, keeping the target's head visible when it cannot all fit."""
+    center = (target[0] + target[2] / 2, target[1] + target[3] / 2)
+    x0, y0, w, h = crop_window_f(img_w, img_h, center, zoom, aspect)
+    if target[1] < y0:
+        y0 = min(max(target[1] - h * 0.05, 0), img_h - h)
+    return x0, y0, w, h
+
+
+def target_fits_window(target, window):
+    """Whether a target box is completely visible within a crop window."""
+    x, y, w, h = target
+    x0, y0, window_w, window_h = window
+    return x0 <= x and y0 <= y and x + w <= x0 + window_w and y + h <= y0 + window_h
 
 
 def fallback_subject_mask(shape, face, feather=0.6):
@@ -455,8 +518,20 @@ def prepare_image(img, face, blur, mask=None):
     return (img * mask + blurred * (1 - mask)).astype(np.uint8)
 
 
+def render_view(img, size, zoom, center):
+    """Render a source-space centre at a zoom relative to the letterboxed full image."""
+    out_w, out_h = size
+    img_h, img_w = img.shape[:2]
+    fit_scale = min(out_w / img_w, out_h / img_h)
+    scale = fit_scale * zoom
+    matrix = np.float64([[scale, 0, out_w / 2 - center[0] * scale],
+                         [0, scale, out_h / 2 - center[1] * scale]])
+    return cv2.warpAffine(img, matrix, size, flags=cv2.INTER_CUBIC,
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+
+
 def render_frames(img, target, n_frames, size, zoom_percent, start_zoom=1.0, blur=0.0, upsample=True,
-                  blur_face=None, blur_mask=None):
+                  blur_face=None, blur_mask=None, start_target=None):
     """Yield n_frames BGR frames of the given size zooming towards the target.
 
     The crop window moves linearly from its start to its end position, so pan and
@@ -466,38 +541,19 @@ def render_frames(img, target, n_frames, size, zoom_percent, start_zoom=1.0, blu
     h, w = img.shape[:2]
     if target is None:
         target = (w // 2 - 1, h // 2 - 1, 2, 2)
-    center = (target[0] + target[2] / 2, target[1] + target[3] / 2)
+    end_center = (target[0] + target[2] / 2, target[1] + target[3] / 2)
+    start_target = start_target or target
+    start_center = (
+        (w / 2, h / 2) if start_zoom == 1.0
+        else (start_target[0] + start_target[2] / 2, start_target[1] + start_target[3] / 2)
+    )
     src = prepare_image(img, blur_face or target, blur, blur_mask)
-    aspect = out_w / out_h
-    start = crop_window_f(w, h, center, zoom_factor(0.0, zoom_percent, start_zoom), aspect)
-    end = crop_window_f(w, h, center, zoom_factor(1.0, zoom_percent, start_zoom), aspect)
-    # Crop to the area that will ever be shown, so scaling never touches the rest.
-    ux0 = max(0, int(min(start[0], end[0])) - 2)
-    uy0 = max(0, int(min(start[1], end[1])) - 2)
-    ux1 = min(w, int(np.ceil(max(start[0] + start[2], end[0] + end[2]))) + 2)
-    uy1 = min(h, int(np.ceil(max(start[1] + start[3], end[1] + end[3]))) + 2)
-    src = src[uy0:uy1, ux0:ux1]
-    magnification = out_w / end[2]  # output pixels per source pixel at the end
-    if magnification >= 1.0:
-        f = 1.5 * magnification if upsample else 1.0
-    else:
-        f = out_w / start[2]  # source is larger than the output: shrink once, no aliasing
-    if f != 1.0:
-        src = cv2.resize(src, None, fx=f, fy=f,
-                         interpolation=cv2.INTER_AREA if f < 1.0 else cv2.INTER_CUBIC)
-    start_center = (start[0] + start[2] / 2, start[1] + start[3] / 2)
-    end_center = (end[0] + end[2] / 2, end[1] + end[3] / 2)
     for i in range(n_frames):
         t = i / (n_frames - 1) if n_frames > 1 else 1.0
         pan_t, zoom_t = animation_progress(t)
-        cw, ch = ((1 - zoom_t) * a + zoom_t * b for a, b in zip(start[2:], end[2:]))
         center = tuple((1 - pan_t) * a + pan_t * b for a, b in zip(start_center, end_center))
-        x0 = min(max(center[0] - cw / 2, 0), w - cw)
-        y0 = min(max(center[1] - ch / 2, 0), h - ch)
-        sx, sy = out_w / (cw * f), out_h / (ch * f)
-        m = np.float64([[sx, 0, -(x0 - ux0) * f * sx], [0, sy, -(y0 - uy0) * f * sy]])
-        yield cv2.warpAffine(src, m, (out_w, out_h), flags=cv2.INTER_CUBIC,
-                             borderMode=cv2.BORDER_REPLICATE)
+        zoom = (1 - zoom_t) * start_zoom + zoom_t * zoom_factor(1.0, zoom_percent, start_zoom)
+        yield render_view(src, size, zoom, center)
 
 
 # Progressively more aggressive passes used to find a known person:
@@ -537,8 +593,10 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
         writer.release()
         raise RuntimeError("video writer backend does not support --quality")
     n_frames = max(1, int(round(seconds * fps)))
+    transition_frames = max(1, int(round(TRANSITION_SECONDS * fps)))
     total = len(paths)
     used = 0
+    previous_final = None
     try:
         for i, path in enumerate(paths, 1):
             print(f"image {i} of {total}: {path.name}", file=sys.stderr)
@@ -564,6 +622,14 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
             ) > 1.0
             estimated_chest = chest_box(face) if target == "chest" and face is not None and chest is None else None
             box = full_box if full_chest_active else (chest or estimated_chest or face)
+            initial_box = torso_box(face, pose) if target == "chest" and face is not None else box
+            if full_chest_active:
+                full_chest_start_zoom = initial_zoom((img.shape[1], img.shape[0]), initial_box, size,
+                                                      start_face_size, max_upscale)
+                full_chest_end_zoom = full_chest_zoom((img.shape[1], img.shape[0]), full_box, size)
+                if full_chest_end_zoom <= full_chest_start_zoom:
+                    full_chest_active = False
+                    box = chest or estimated_chest or face
             if box is None:
                 if not keep_missing:
                     print(f"chosen person not found in {path.name}; excluding it", file=sys.stderr)
@@ -571,13 +637,20 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
                 print(f"chosen person not found in {path.name}; zooming on image centre", file=sys.stderr)
                 start_zoom = 1.0
                 image_zoom = zoom_percent
+                initial_box = None
             elif full_chest_active:
-                start_zoom = 1.0
-                image_zoom = (full_chest_zoom((img.shape[1], img.shape[0]), box, size) - 1.0) * 100
+                start_zoom = full_chest_start_zoom
+                image_zoom = (full_chest_end_zoom / start_zoom - 1.0) * 100
             else:
-                start_zoom = initial_zoom((img.shape[1], img.shape[0]), box, size,
+                start_zoom = initial_zoom((img.shape[1], img.shape[0]), initial_box, size,
                                           start_face_size, max_upscale)
                 image_zoom = zoom_percent
+            end_zoom = start_zoom * (1 + image_zoom / 100)
+            chest_finish = chest or estimated_chest
+            finish_zoom = (
+                max(end_zoom, chest_width_zoom((img.shape[1], img.shape[0]), chest_finish, size))
+                if chest_finish is not None else end_zoom
+            )
             target_name = (
                 "chest" if chest is not None
                 else ("chest-estimate" if estimated_chest is not None else ("face" if face is not None else "centre"))
@@ -585,13 +658,37 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
             print(
                 f"target={target_name}; full_chest={'yes' if full_chest_active else 'no'}; "
                 f"initial_zoom={start_zoom * 100:.0f}%; "
-                f"final_zoom={start_zoom * (1 + image_zoom / 100) * 100:.0f}%",
+                f"final_zoom={finish_zoom * 100:.0f}%",
                 file=sys.stderr,
             )
             mask = pose_subject_mask(img, pose) if blur else None
+            src = prepare_image(img, blur_face or box, blur, mask)
+            initial_center = (
+                (img.shape[1] / 2, img.shape[0] / 2) if start_zoom == 1.0
+                else (initial_box[0] + initial_box[2] / 2, initial_box[1] + initial_box[3] / 2)
+            )
+            initial_frame = render_view(src, size, start_zoom, initial_center)
+            if previous_final is not None:
+                for frame_number in range(1, transition_frames + 1):
+                    alpha = frame_number / transition_frames
+                    writer.write(cv2.addWeighted(previous_final, 1 - alpha, initial_frame, alpha, 0))
+            for _ in range(transition_frames):
+                writer.write(initial_frame)
+            last_frame = initial_frame
             for frame in render_frames(img, box, n_frames, size, image_zoom, start_zoom, blur, upsample,
-                                       blur_face, mask):
+                                       blur_face, mask, initial_box):
                 writer.write(frame)
+                last_frame = frame
+            if chest_finish is not None:
+                finish_center = (chest_finish[0] + chest_finish[2] / 2, chest_finish[1] + chest_finish[3] / 2)
+                if finish_zoom > end_zoom:
+                    for frame_number in range(1, transition_frames + 1):
+                        progress = frame_number / transition_frames
+                        frame = render_view(src, size, (1 - progress) * end_zoom + progress * finish_zoom,
+                                            finish_center)
+                        writer.write(frame)
+                        last_frame = frame
+            previous_final = last_frame
             used += 1
     except KeyboardInterrupt:
         print(f"\ninterrupted at image {i} of {total}; saving the video made so far", file=sys.stderr)
