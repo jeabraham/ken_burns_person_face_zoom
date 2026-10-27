@@ -14,7 +14,7 @@ $(VENV)/.installed: requirements.txt
 
 run: setup
 	$(PY) ken_burns_face_zoom.py $(INPUT_DIR) -o $(OUTPUT) --order $(ORDER) --zoom $(ZOOM) \
-		--target $(TARGET) $(if $(filter 1 true yes,$(FULL_CHEST)),--full-chest) --start-target-size $(START_TARGET_SIZE) --max-upscale $(MAX_UPSCALE) --scan $(SCAN) $(if $(PERSON),--person $(PERSON)) --blur $(BLUR) --seconds $(SECONDS_PER_IMAGE)
+		--target $(TARGET) $(if $(filter 1 true yes,$(FULL_CHEST)),--full-chest) --chest-hold $(CHEST_HOLD_SECONDS) --start-target-size $(START_TARGET_SIZE) --max-upscale $(MAX_UPSCALE) --scan $(SCAN) $(if $(PERSON),--person $(PERSON)) --blur $(BLUR) --seconds $(SECONDS_PER_IMAGE)
 
 test: setup
 	$(PY) -m pytest -q

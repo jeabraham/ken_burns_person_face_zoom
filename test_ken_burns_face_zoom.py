@@ -31,11 +31,13 @@ def test_output_resolution_and_quality_options():
     assert args.quality == 85
     assert args.target == "chest"
     assert not args.full_chest
+    assert args.chest_hold == 0.5
 
     args = kb.parse_args(["photos", "--width", "640", "--height", "360"])
     assert (args.width, args.height) == (640, 360)
     assert kb.parse_args(["photos", "--start-target-size", "35"]).start_face_size == 35
     assert kb.parse_args(["photos", "--full-chest"]).full_chest
+    assert kb.parse_args(["photos", "--chest-hold", "1.25"]).chest_hold == 1.25
 
     with pytest.raises(SystemExit):
         kb.parse_args(["photos", "--resolution", "720p", "--width", "640"])
@@ -43,6 +45,8 @@ def test_output_resolution_and_quality_options():
         kb.parse_args(["photos", "--quality", "101"])
     with pytest.raises(SystemExit):
         kb.parse_args(["photos", "--width", "0"])
+    with pytest.raises(SystemExit):
+        kb.parse_args(["photos", "--chest-hold", "-1"])
 
 
 def test_build_video_applies_quality_option(monkeypatch):
@@ -177,6 +181,12 @@ def test_scale_to_fit_zoom_one_letterboxes_without_cropping():
     assert frame.shape == (90, 160, 3)
     assert np.all(frame[:, :55] == 0)
     assert np.all(frame[:, 60:100] == 255)
+
+
+def test_target_visibility_requires_the_complete_chest_box():
+    img = np.zeros((100, 100, 3), np.uint8)
+    assert kb.target_is_visible((10, 10, 80, 80), img.shape)
+    assert not kb.target_is_visible((10, 50, 80, 80), img.shape)
 
 
 def test_main_creates_video(tmp_path, monkeypatch):

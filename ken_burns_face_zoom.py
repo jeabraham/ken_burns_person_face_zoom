@@ -518,16 +518,24 @@ def prepare_image(img, face, blur, mask=None):
     return (img * mask + blurred * (1 - mask)).astype(np.uint8)
 
 
-def render_view(img, size, zoom, center):
+def render_view(img, size, zoom, center, output_center=None):
     """Render a source-space centre at a zoom relative to the letterboxed full image."""
     out_w, out_h = size
     img_h, img_w = img.shape[:2]
     fit_scale = min(out_w / img_w, out_h / img_h)
     scale = fit_scale * zoom
-    matrix = np.float64([[scale, 0, out_w / 2 - center[0] * scale],
-                         [0, scale, out_h / 2 - center[1] * scale]])
+    output_center = output_center or (out_w / 2, out_h / 2)
+    matrix = np.float64([[scale, 0, output_center[0] - center[0] * scale],
+                         [0, scale, output_center[1] - center[1] * scale]])
     return cv2.warpAffine(img, matrix, size, flags=cv2.INTER_CUBIC,
                           borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+
+
+def target_is_visible(target, img_shape):
+    """Whether all of a target box lies inside the source image."""
+    x, y, w, h = target
+    img_h, img_w = img_shape[:2]
+    return x >= 0 and y >= 0 and x + w <= img_w and y + h <= img_h
 
 
 def render_frames(img, target, n_frames, size, zoom_percent, start_zoom=1.0, blur=0.0, upsample=True,
@@ -585,7 +593,8 @@ def find_person(img, features, aggressive=True, include_landmarks=False):
 
 def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, zoom_percent=30.0,
                 start_face_size=25.0, max_upscale=1.5, blur=0.0, keep_missing=False,
-                aggressive=True, upsample=True, quality=None, target="chest", full_chest=False):
+                aggressive=True, upsample=True, quality=None, target="chest", full_chest=False,
+                chest_hold=0.5):
     writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     if not writer.isOpened():
         raise RuntimeError(f"cannot open video writer for {output}")
@@ -594,6 +603,7 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
         raise RuntimeError("video writer backend does not support --quality")
     n_frames = max(1, int(round(seconds * fps)))
     transition_frames = max(1, int(round(TRANSITION_SECONDS * fps)))
+    chest_hold_frames = max(0, int(round(chest_hold * fps)))
     total = len(paths)
     used = 0
     previous_final = None
@@ -681,13 +691,21 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
                 last_frame = frame
             if chest_finish is not None:
                 finish_center = (chest_finish[0] + chest_finish[2] / 2, chest_finish[1] + chest_finish[3] / 2)
+                finish_output_center = (
+                    (size[0] / 2, size[1] / 2)
+                    if target_is_visible(chest_finish, img.shape)
+                    else (size[0] / 2, size[1] * 2 / 3)
+                )
                 if finish_zoom > end_zoom:
                     for frame_number in range(1, transition_frames + 1):
                         progress = frame_number / transition_frames
                         frame = render_view(src, size, (1 - progress) * end_zoom + progress * finish_zoom,
-                                            finish_center)
+                                            finish_center, finish_output_center)
                         writer.write(frame)
                         last_frame = frame
+                for _ in range(chest_hold_frames):
+                    last_frame = render_view(src, size, finish_zoom, finish_center, finish_output_center)
+                    writer.write(last_frame)
             previous_final = last_frame
             used += 1
     except KeyboardInterrupt:
@@ -714,6 +732,8 @@ def parse_args(argv=None):
                    help="what to zoom on: the chest detected with BlazePose (default), or the face")
     p.add_argument("--full-chest", action="store_true",
                    help="when chest landmarks are reliable, zoom from the full image to the complete chest area")
+    p.add_argument("--chest-hold", type=float, default=0.5,
+                   help="seconds to hold the final chest-width frame before the crossfade (default 0.5)")
     p.add_argument("--keep-missing", action="store_true",
                    help="keep images where the chosen person isn't found (zoom on the centre) "
                         "instead of excluding them")
@@ -750,6 +770,8 @@ def parse_args(argv=None):
         p.error("--max-upscale must be >= 1 and --scan >= 1")
     if args.seconds <= 0 or args.fps <= 0 or args.width <= 0 or args.height <= 0:
         p.error("--seconds, --fps, --width and --height must be > 0")
+    if args.chest_hold < 0:
+        p.error("--chest-hold must be >= 0")
     if args.quality is not None and not 0 <= args.quality <= 100:
         p.error("--quality must be between 0 and 100")
     return args
@@ -765,7 +787,7 @@ def main(argv=None):
     used = build_video(paths, args.output, features, (args.width, args.height), args.fps, args.seconds,
                 args.zoom, args.start_face_size, args.max_upscale, args.blur,
                 args.keep_missing, not args.no_aggressive, not args.no_upsample, args.quality, args.target,
-                args.full_chest)
+                args.full_chest, args.chest_hold)
     print(f"wrote {args.output} from {used} of {len(paths)} images")
     return 0
 

@@ -20,6 +20,7 @@ Options:
 - `--zoom PERCENT`: zoom added over each image (default 30)
 - `--target chest|face`: zoom on the BlazePose-detected chest (default) or face. The pose crop is guided by the selected face's landmarks and rejects a pose whose nose does not match that face. If BlazePose cannot see both shoulders, chest mode estimates the chest from the identified face.
 - `--full-chest`: when both shoulders are confidently visible, zoom from the torso/head opening frame to the complete chest area. Visible hips refine the shoulder-to-hip framing; otherwise it is estimated from shoulder width. This overrides `--zoom` and `--max-upscale`.
+- `--chest-hold SECONDS`: hold the final chest-width frame before transitioning (default 0.5).
 - `--start-target-size PERCENT`: initial target height as a percent of frame height (default 25). At `100%`, the complete image is letterboxed with nothing cropped. Face zooms size the face to this proportion. Chest zooms size the opening head-to-knees torso frame to this proportion before panning into the chest. `0` disables it. `--start-face-size` remains an alias.
 - `--max-upscale X`: cap on the initial zoom, as a multiple of the output video resolution (default 1.5), so low-resolution photos are not blown up
 - `--scan N`: number of images scanned for people to choose from (default 5)
