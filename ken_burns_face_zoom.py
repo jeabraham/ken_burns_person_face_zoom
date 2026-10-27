@@ -508,13 +508,28 @@ def fallback_subject_mask(shape, face, feather=0.6):
     return cv2.GaussianBlur(mask, (k, k), 0)
 
 
+def exclude_face_from_blur(mask, face):
+    """Force the matched face region to remain sharp in a subject mask."""
+    if face is None:
+        return mask
+    protected = mask.copy()
+    x, y, w, h = face
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(mask.shape[1], x + w), min(mask.shape[0], y + h)
+    if x0 < x1 and y0 < y1:
+        protected[y0:y1, x0:x1] = 1.0
+    return protected
+
+
 def prepare_image(img, face, blur, mask=None):
     """Return the image to animate (optionally with the background blurred)."""
     if not blur:
         return img
     k = (int(max(img.shape[:2]) * blur / 100.0) | 1)
     blurred = cv2.GaussianBlur(img, (k, k), 0)
-    mask = (mask if mask is not None else fallback_subject_mask(img.shape, face))[..., None]
+    mask = exclude_face_from_blur(
+        mask if mask is not None else fallback_subject_mask(img.shape, face), face
+    )[..., None]
     return (img * mask + blurred * (1 - mask)).astype(np.uint8)
 
 

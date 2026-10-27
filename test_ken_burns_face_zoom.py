@@ -175,6 +175,13 @@ def test_render_and_blur():
     assert len(frames) == 5 and frames[0].shape == (180, 320, 3)
 
 
+def test_blur_mask_always_preserves_the_matched_face():
+    img = np.random.default_rng(1).integers(0, 255, (100, 120, 3), dtype=np.uint8)
+    face = (40, 30, 30, 20)
+    result = kb.prepare_image(img, face, blur=10, mask=np.zeros(img.shape[:2], np.float32))
+    assert np.array_equal(result[30:50, 40:70], img[30:50, 40:70])
+
+
 def test_scale_to_fit_zoom_one_letterboxes_without_cropping():
     img = np.full((200, 100, 3), 255, np.uint8)
     frame = kb.render_view(img, (160, 90), 1.0, (50, 100))
