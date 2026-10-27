@@ -798,7 +798,8 @@ def main(argv=None):
     if not paths:
         print("no images found", file=sys.stderr)
         return 1
-    features = choose_person(scan_people(paths, args.scan), args.person, args.people_sheet)
+    scan_paths = find_images(args.folder, "name")
+    features = choose_person(scan_people(scan_paths, args.scan), args.person, args.people_sheet)
     used = build_video(paths, args.output, features, (args.width, args.height), args.fps, args.seconds,
                 args.zoom, args.start_face_size, args.max_upscale, args.blur,
                 args.keep_missing, not args.no_aggressive, not args.no_upsample, args.quality, args.target,

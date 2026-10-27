@@ -208,6 +208,24 @@ def test_main_creates_video(tmp_path, monkeypatch):
     assert out.stat().st_size > 0
 
 
+def test_main_scans_people_in_stable_filename_order(tmp_path, monkeypatch):
+    render_paths = [tmp_path / "render.png"]
+    scan_paths = [tmp_path / "scan.png"]
+    for path in render_paths + scan_paths:
+        cv2.imwrite(str(path), np.full((90, 160, 3), 128, np.uint8))
+    calls = []
+
+    def fake_find(folder, order="name", seed=None):
+        calls.append(order)
+        return scan_paths if order == "name" else render_paths
+
+    monkeypatch.setattr(kb, "find_images", fake_find)
+    monkeypatch.setattr(kb, "scan_people", lambda paths, count: [{"features": [np.ones(2)]}])
+    monkeypatch.setattr(kb, "build_video", lambda *args, **kwargs: 1)
+    assert kb.main([str(tmp_path), "--order", "random", "--person", "1"]) == 0
+    assert calls == ["random", "name"]
+
+
 def test_find_person_escalates_and_missing_excluded(tmp_path, monkeypatch):
     a, b = np.array([1.0, 0.0]), np.array([0.0, 1.0])
     calls = []

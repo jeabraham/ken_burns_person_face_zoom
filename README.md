@@ -23,7 +23,7 @@ Options:
 - `--chest-hold SECONDS`: hold the final chest-width frame before transitioning (default 0.5).
 - `--start-target-size PERCENT`: initial target height as a percent of frame height (default 25). At `100%`, the complete image is letterboxed with nothing cropped. Face zooms size the face to this proportion. Chest zooms size the opening head-to-knees torso frame to this proportion before panning into the chest. `0` disables it. `--start-face-size` remains an alias.
 - `--max-upscale X`: cap on the initial zoom, as a multiple of the output video resolution (default 1.5), so low-resolution photos are not blown up
-- `--scan N`: number of images scanned for people to choose from (default 5)
+- `--scan N`: number of filename-sorted images scanned for people to choose from (default 5). This is stable even when `--order random` is used for rendering.
 - `--person K`: number of the person to follow; without it the script writes `people.jpg` (numbered thumbnails) and asks
 - `--blur STRENGTH`: blur everything except the selected person's BlazePose segmentation outline; percent of image size (default off). It falls back to the prior face-based approximation only if pose segmentation is unavailable.
 - `--seconds N`: seconds per image (default 3)
