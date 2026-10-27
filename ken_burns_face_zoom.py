@@ -213,6 +213,17 @@ def pick_face(faces, features, threshold=MATCH_THRESHOLD):
     return best
 
 
+def chest_box(face):
+    """Estimate the upper-chest region (x, y, w, h) below a face box.
+
+    Heuristic from typical proportions: the chest centre sits about two face
+    heights below the top of the face box and the shoulders are ~2.4 face widths
+    across. Assumes an upright person; the crop is clamped to the image later."""
+    x, y, fw, fh = face
+    w, h = 2.4 * fw, 1.8 * fh
+    return (int(round(x + fw / 2 - w / 2)), int(round(y + 2.0 * fh - h / 2)), int(round(w)), int(round(h)))
+
+
 def zoom_factor(t, zoom_percent, start_zoom=1.0):
     """Zoom at progress t in [0, 1]; 1.0 means the full (aspect-fitted) frame.
 
@@ -273,7 +284,7 @@ def prepare_image(img, face, blur):
     return (img * mask + blurred * (1 - mask)).astype(np.uint8)
 
 
-def render_frames(img, face, n_frames, size, zoom_percent, start_zoom=1.0, blur=0.0, upsample=True):
+def render_frames(img, face, n_frames, size, zoom_percent, start_zoom=1.0, blur=0.0, upsample=True, blur_face=None):
     """Yield n_frames BGR frames of the given size zooming towards the face.
 
     The crop window moves linearly from its start to its end position, so pan and
@@ -284,7 +295,7 @@ def render_frames(img, face, n_frames, size, zoom_percent, start_zoom=1.0, blur=
     if face is None:
         face = (w // 2 - 1, h // 2 - 1, 2, 2)
     center = (face[0] + face[2] / 2, face[1] + face[3] / 2)
-    src = prepare_image(img, face, blur)
+    src = prepare_image(img, blur_face or face, blur)
     aspect = out_w / out_h
     start = crop_window_f(w, h, center, zoom_factor(0.0, zoom_percent, start_zoom), aspect)
     end = crop_window_f(w, h, center, zoom_factor(1.0, zoom_percent, start_zoom), aspect)
@@ -337,7 +348,7 @@ def find_person(img, features, aggressive=True):
 
 def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, zoom_percent=30.0,
                 start_face_size=25.0, max_upscale=1.5, blur=0.0, keep_missing=False,
-                aggressive=True, upsample=True, quality=None):
+                aggressive=True, upsample=True, quality=None, target="face"):
     writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     if not writer.isOpened():
         raise RuntimeError(f"cannot open video writer for {output}")
@@ -356,6 +367,9 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
                 print(f"skipping {path}: {exc}", file=sys.stderr)
                 continue
             face = find_person(img, features, aggressive)
+            blur_face = face
+            if face is not None and target == "chest":
+                face = chest_box(face)
             if face is None:
                 if not keep_missing:
                     print(f"chosen person not found in {path.name}; excluding it", file=sys.stderr)
@@ -365,7 +379,7 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
             else:
                 start_zoom = initial_zoom((img.shape[1], img.shape[0]), face, size,
                                           start_face_size, max_upscale)
-            for frame in render_frames(img, face, n_frames, size, zoom_percent, start_zoom, blur, upsample):
+            for frame in render_frames(img, face, n_frames, size, zoom_percent, start_zoom, blur, upsample, blur_face):
                 writer.write(frame)
             used += 1
     except KeyboardInterrupt:
@@ -388,6 +402,8 @@ def parse_args(argv=None):
                         "zoomed in to this size, larger faces are left alone (default 25, 0 = off)")
     p.add_argument("--max-upscale", type=float, default=1.5,
                    help="max initial zoom, as a multiple of the output video's pixel resolution (default 1.5)")
+    p.add_argument("--target", choices=["face", "chest"], default="face",
+                   help="what to zoom on: the face, or the chest estimated from the face (default face)")
     p.add_argument("--keep-missing", action="store_true",
                    help="keep images where the chosen person isn't found (zoom on the centre) "
                         "instead of excluding them")
@@ -438,7 +454,7 @@ def main(argv=None):
     features = choose_person(scan_people(paths, args.scan), args.person, args.people_sheet)
     used = build_video(paths, args.output, features, (args.width, args.height), args.fps, args.seconds,
                 args.zoom, args.start_face_size, args.max_upscale, args.blur,
-                args.keep_missing, not args.no_aggressive, not args.no_upsample, args.quality)
+                args.keep_missing, not args.no_aggressive, not args.no_upsample, args.quality, args.target)
     print(f"wrote {args.output} from {used} of {len(paths)} images")
     return 0
 

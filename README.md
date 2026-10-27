@@ -15,6 +15,7 @@ python ken_burns_face_zoom.py photos/ -o out.mp4 --zoom 30 --start-face-size 25 
 
 Options:
 - `--zoom PERCENT`: zoom added over each image (default 30)
+- `--target face|chest`: zoom on the face (default) or on the chest, estimated from the face position and size (experimental; assumes an upright person)
 - `--start-face-size PERCENT`: initial face height as a percent of frame height (default 25). A distant face in a group shot starts zoomed in to this size; a face that is already large (e.g. a portrait) gets no initial zoom. `0` disables it
 - `--max-upscale X`: cap on the initial zoom, as a multiple of the output video resolution (default 1.5), so low-resolution photos are not blown up
 - `--scan N`: number of images scanned for people to choose from (default 5)

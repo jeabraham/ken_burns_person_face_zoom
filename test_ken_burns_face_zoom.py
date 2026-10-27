@@ -164,3 +164,9 @@ def test_ctrl_c_saves_partial_video(tmp_path, monkeypatch, capsys):
     assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == 8
     err = capsys.readouterr().err
     assert "image 2 of 3" in err and "interrupted at image 3 of 3" in err
+
+
+def test_chest_box_is_below_face_and_wider():
+    x, y, w, h = kb.chest_box((100, 100, 50, 60))
+    assert y + h / 2 == 100 + 2 * 60
+    assert w > 50 and x + w / 2 == 125
