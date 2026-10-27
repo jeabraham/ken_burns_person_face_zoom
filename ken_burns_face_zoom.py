@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a video from a folder of images, Ken Burns zooming on one person's face in each."""
+"""Build a video from a folder of images, Ken Burns zooming on one person's chest in each."""
 import argparse
 import hashlib
 import random
@@ -21,6 +21,10 @@ MODELS = {
                  "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"),
     "recognizer": ("face_recognition_sface_2021dec.onnx", _ZOO + "face_recognition_sface/face_recognition_sface_2021dec.onnx",
                    "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"),
+    "pose": ("pose_landmarker_full.task",
+             "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+             "pose_landmarker_full/float16/1/pose_landmarker_full.task",
+             "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1"),
 }
 MATCH_THRESHOLD = 0.363  # SFace cosine similarity threshold for "same person"
 DETECT_MAX_SIDE = 1280
@@ -87,6 +91,7 @@ def model_path(key):
 
 
 _engine = {}
+_pose_engine = None
 
 
 def detect_faces(img, score=0.8, max_side=DETECT_MAX_SIDE, flip=False):
@@ -214,14 +219,87 @@ def pick_face(faces, features, threshold=MATCH_THRESHOLD):
 
 
 def chest_box(face):
-    """Estimate the upper-chest region (x, y, w, h) below a face box.
+    """Estimate the upper-chest region from a face box.
 
-    Heuristic from typical proportions: the chest centre sits about two face
-    heights below the top of the face box and the shoulders are ~2.4 face widths
-    across. Assumes an upright person; the crop is clamped to the image later."""
+    This is used only when BlazePose cannot find visible shoulders."""
     x, y, fw, fh = face
     w, h = 2.4 * fw, 1.8 * fh
     return (int(round(x + fw / 2 - w / 2)), int(round(y + 2.0 * fh - h / 2)), int(round(w)), int(round(h)))
+
+
+def pose_engine():
+    """Create the MediaPipe BlazePose detector on first chest-targeted image."""
+    global _pose_engine
+    if _pose_engine is None:
+        try:
+            import mediapipe as mp
+            from mediapipe.tasks import python
+            from mediapipe.tasks.python import vision
+        except ImportError as exc:
+            raise RuntimeError(
+                "MediaPipe is required for --target chest; run 'pip install -r requirements.txt'"
+            ) from exc
+        options = vision.PoseLandmarkerOptions(
+            base_options=python.BaseOptions(model_asset_path=model_path("pose")),
+            num_poses=1,
+            min_pose_detection_confidence=0.4,
+        )
+        _pose_engine = (mp, vision.PoseLandmarker.create_from_options(options))
+    return _pose_engine
+
+
+def pose_chest_box(img, face):
+    """Return a BlazePose-derived chest box for `face`, or None if unavailable.
+
+    The face-centred crop keeps a different person in a group photo from being
+    selected by Pose. Its generous lower extent includes the shoulders and,
+    when visible, hips used to scale the torso."""
+    x, y, fw, fh = face
+    img_h, img_w = img.shape[:2]
+    x0 = max(0, int(round(x - 2 * fw)))
+    y0 = max(0, int(round(y - fh)))
+    x1 = min(img_w, int(round(x + 3 * fw)))
+    y1 = min(img_h, int(round(y + 7 * fh)))
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+
+    crop = img[y0:y1, x0:x1]
+    mp, detector = pose_engine()
+    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    result = detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+    if not result.pose_landmarks:
+        return None
+    landmarks = result.pose_landmarks[0]
+    left_shoulder, right_shoulder = landmarks[11], landmarks[12]
+    if min(left_shoulder.visibility, right_shoulder.visibility) < 0.5:
+        return None
+
+    def point(landmark):
+        return np.array((x0 + landmark.x * (x1 - x0), y0 + landmark.y * (y1 - y0)))
+
+    shoulders = (point(left_shoulder) + point(right_shoulder)) / 2
+    shoulder_width = float(np.linalg.norm(point(left_shoulder) - point(right_shoulder)))
+    left_hip, right_hip = landmarks[23], landmarks[24]
+    if min(left_hip.visibility, right_hip.visibility) >= 0.5:
+        hips = (point(left_hip) + point(right_hip)) / 2
+        torso = float(np.linalg.norm(hips - shoulders))
+    else:
+        torso = shoulder_width
+    if shoulder_width < 2 or torso < 2:
+        return None
+
+    width = max(shoulder_width * 1.25, fw * 2)
+    height = max(torso * 0.9, shoulder_width)
+    center = shoulders + (hips - shoulders) * 0.4 if 'hips' in locals() else shoulders + np.array((0, torso * 0.35))
+    return (int(round(center[0] - width / 2)), int(round(center[1] - height / 2)),
+            int(round(width)), int(round(height)))
+
+
+def target_box(img, face, target):
+    """Return the requested target box, preserving a face-based fallback."""
+    if target != "chest":
+        return face
+    return pose_chest_box(img, face) or chest_box(face)
 
 
 def zoom_factor(t, zoom_percent, start_zoom=1.0):
@@ -231,8 +309,8 @@ def zoom_factor(t, zoom_percent, start_zoom=1.0):
     return start_zoom * (1 + zoom_percent / 100.0 * t)
 
 
-def initial_zoom(img_size, face, out_size, face_fraction, max_upscale):
-    """Zoom needed at the start so the face is `face_fraction` (percent) of the
+def initial_zoom(img_size, target, out_size, target_fraction, max_upscale):
+    """Zoom needed at the start so the target is `target_fraction` (percent) of the
     frame height, never below 1 and never so deep that the crop has fewer than
     out_width / max_upscale source pixels across."""
     img_w, img_h = img_size
@@ -240,7 +318,7 @@ def initial_zoom(img_size, face, out_size, face_fraction, max_upscale):
     aspect = out_w / out_h
     base_w = min(img_w, img_h * aspect)
     base_h = base_w / aspect
-    zoom = max(1.0, face_fraction / 100.0 * base_h / face[3]) if face_fraction > 0 else 1.0
+    zoom = max(1.0, target_fraction / 100.0 * base_h / target[3]) if target_fraction > 0 else 1.0
     return max(1.0, min(zoom, base_w * max_upscale / out_w))
 
 
@@ -284,18 +362,18 @@ def prepare_image(img, face, blur):
     return (img * mask + blurred * (1 - mask)).astype(np.uint8)
 
 
-def render_frames(img, face, n_frames, size, zoom_percent, start_zoom=1.0, blur=0.0, upsample=True, blur_face=None):
-    """Yield n_frames BGR frames of the given size zooming towards the face.
+def render_frames(img, target, n_frames, size, zoom_percent, start_zoom=1.0, blur=0.0, upsample=True, blur_face=None):
+    """Yield n_frames BGR frames of the given size zooming towards the target.
 
     The crop window moves linearly from its start to its end position, so pan and
     zoom finish together. Frames are rendered with sub-pixel precision (no integer
     rounding of the crop) to avoid jerky motion; `upsample` XX"""
     out_w, out_h = size
     h, w = img.shape[:2]
-    if face is None:
-        face = (w // 2 - 1, h // 2 - 1, 2, 2)
-    center = (face[0] + face[2] / 2, face[1] + face[3] / 2)
-    src = prepare_image(img, blur_face or face, blur)
+    if target is None:
+        target = (w // 2 - 1, h // 2 - 1, 2, 2)
+    center = (target[0] + target[2] / 2, target[1] + target[3] / 2)
+    src = prepare_image(img, blur_face or target, blur)
     aspect = out_w / out_h
     start = crop_window_f(w, h, center, zoom_factor(0.0, zoom_percent, start_zoom), aspect)
     end = crop_window_f(w, h, center, zoom_factor(1.0, zoom_percent, start_zoom), aspect)
@@ -348,7 +426,7 @@ def find_person(img, features, aggressive=True):
 
 def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, zoom_percent=30.0,
                 start_face_size=25.0, max_upscale=1.5, blur=0.0, keep_missing=False,
-                aggressive=True, upsample=True, quality=None, target="face"):
+                aggressive=True, upsample=True, quality=None, target="chest"):
     writer = cv2.VideoWriter(str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     if not writer.isOpened():
         raise RuntimeError(f"cannot open video writer for {output}")
@@ -368,18 +446,17 @@ def build_video(paths, output, features, size=(1280, 720), fps=30, seconds=3.0, 
                 continue
             face = find_person(img, features, aggressive)
             blur_face = face
-            if face is not None and target == "chest":
-                face = chest_box(face)
-            if face is None:
+            box = target_box(img, face, target) if face is not None else None
+            if box is None:
                 if not keep_missing:
                     print(f"chosen person not found in {path.name}; excluding it", file=sys.stderr)
                     continue
                 print(f"chosen person not found in {path.name}; zooming on image centre", file=sys.stderr)
                 start_zoom = 1.0
             else:
-                start_zoom = initial_zoom((img.shape[1], img.shape[0]), face, size,
+                start_zoom = initial_zoom((img.shape[1], img.shape[0]), box, size,
                                           start_face_size, max_upscale)
-            for frame in render_frames(img, face, n_frames, size, zoom_percent, start_zoom, blur, upsample, blur_face):
+            for frame in render_frames(img, box, n_frames, size, zoom_percent, start_zoom, blur, upsample, blur_face):
                 writer.write(frame)
             used += 1
     except KeyboardInterrupt:
@@ -397,13 +474,13 @@ def parse_args(argv=None):
                    help="image order: random, date captured, or filename (default: name)")
     p.add_argument("--seed", type=int, help="random seed for --order random")
     p.add_argument("--zoom", type=float, default=30.0, help="percent zoom during each image (default 30)")
-    p.add_argument("--start-face-size", type=float, default=25.0,
-                   help="initial face height as percent of frame height; distant faces start "
-                        "zoomed in to this size, larger faces are left alone (default 25, 0 = off)")
+    p.add_argument("--start-target-size", "--start-face-size", dest="start_face_size", type=float, default=25.0,
+                   help="initial target height as percent of frame height; distant targets start "
+                        "zoomed in to this size, larger targets are left alone (default 25, 0 = off)")
     p.add_argument("--max-upscale", type=float, default=1.5,
                    help="max initial zoom, as a multiple of the output video's pixel resolution (default 1.5)")
-    p.add_argument("--target", choices=["face", "chest"], default="face",
-                   help="what to zoom on: the face, or the chest estimated from the face (default face)")
+    p.add_argument("--target", choices=["face", "chest"], default="chest",
+                   help="what to zoom on: the chest detected with BlazePose (default), or the face")
     p.add_argument("--keep-missing", action="store_true",
                    help="keep images where the chosen person isn't found (zoom on the centre) "
                         "instead of excluding them")

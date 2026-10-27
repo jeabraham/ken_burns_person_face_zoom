@@ -3,9 +3,12 @@
 Builds a video from a folder of images. The first N images are scanned for
 people; you pick which person to follow (from numbered thumbnails in
 `people.jpg`, or with `--person K`). In every image that person's face is
-found and a Ken Burns zoom is applied, centred on it. Face detection and
-recognition use OpenCV's YuNet and SFace models, downloaded (checksum-verified)
-into `models/` on first run. Images where the person isn't found are excluded from the video (use `--keep-missing` to keep them, zoomed on the centre).
+found, then MediaPipe BlazePose detects that person's shoulders and torso to
+place a Ken Burns zoom on their chest. Face detection and recognition use
+OpenCV's YuNet and SFace models; chest detection uses the MediaPipe
+PoseLandmarker BlazePose model. Models are downloaded (checksum-verified) into
+`models/` on first run. Images where the person isn't found are excluded from
+the video (use `--keep-missing` to keep them, zoomed on the centre).
 Because the face being looked for is known, the search escalates when the strict pass fails: lower detector confidence, larger detection size for small faces, a mirrored image for turned heads, and a relaxed match threshold. `--no-aggressive` disables this.
 
 ```
@@ -15,8 +18,8 @@ python ken_burns_face_zoom.py photos/ -o out.mp4 --zoom 30 --start-face-size 25 
 
 Options:
 - `--zoom PERCENT`: zoom added over each image (default 30)
-- `--target face|chest`: zoom on the face (default) or on the chest, estimated from the face position and size (experimental; assumes an upright person)
-- `--start-face-size PERCENT`: initial face height as a percent of frame height (default 25). A distant face in a group shot starts zoomed in to this size; a face that is already large (e.g. a portrait) gets no initial zoom. `0` disables it
+- `--target chest|face`: zoom on the BlazePose-detected chest (default) or face. If BlazePose cannot see both shoulders, chest mode falls back to the prior face-proportion estimate.
+- `--start-target-size PERCENT`: initial target height as a percent of frame height (default 25). A distant target starts zoomed in to this size; a target that is already large gets no initial zoom. `0` disables it. `--start-face-size` remains an alias.
 - `--max-upscale X`: cap on the initial zoom, as a multiple of the output video resolution (default 1.5), so low-resolution photos are not blown up
 - `--scan N`: number of images scanned for people to choose from (default 5)
 - `--person K`: number of the person to follow; without it the script writes `people.jpg` (numbered thumbnails) and asks

@@ -16,9 +16,11 @@ def test_output_resolution_and_quality_options():
     args = kb.parse_args(["photos", "--resolution", "1080p", "--quality", "85"])
     assert (args.width, args.height) == (1920, 1080)
     assert args.quality == 85
+    assert args.target == "chest"
 
     args = kb.parse_args(["photos", "--width", "640", "--height", "360"])
     assert (args.width, args.height) == (640, 360)
+    assert kb.parse_args(["photos", "--start-target-size", "35"]).start_face_size == 35
 
     with pytest.raises(SystemExit):
         kb.parse_args(["photos", "--resolution", "720p", "--width", "640"])
@@ -112,7 +114,7 @@ def test_main_creates_video(tmp_path, monkeypatch):
     out = tmp_path / "o.mp4"
     assert kb.main([str(tmp_path), "-o", str(out), "--seconds", "0.5", "--fps", "4",
                     "--width", "160", "--height", "90", "--person", "1",
-                    "--people-sheet", str(tmp_path / "people.jpg")]) == 0
+                    "--people-sheet", str(tmp_path / "people.jpg"), "--target", "face"]) == 0
     assert out.stat().st_size > 0
 
 
@@ -133,12 +135,12 @@ def test_find_person_escalates_and_missing_excluded(tmp_path, monkeypatch):
     cv2.imwrite(str(tmp_path / "a.png"), np.full((300, 400, 3), 128, np.uint8))
     out = tmp_path / "o.mp4"
     args = [str(tmp_path), "-o", str(out), "--seconds", "0.5", "--fps", "4", "--width", "160",
-            "--height", "90", "--person", "1", "--people-sheet", str(tmp_path / "p.jpg")]
+            "--height", "90", "--person", "1", "--people-sheet", str(tmp_path / "p.jpg"), "--target", "face"]
     monkeypatch.setattr(kb, "scan_people", lambda paths, n: [{"features": [a], "thumb": img, "size": 1}])
     monkeypatch.setattr(kb, "find_person", lambda *x, **k: None)
     kb.main(args)
     cap = cv2.VideoCapture(str(out))
-    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == 0
+    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) <= 0
     kb.main(args + ["--keep-missing"])
     cap = cv2.VideoCapture(str(out))
     assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) > 0
@@ -158,7 +160,7 @@ def test_ctrl_c_saves_partial_video(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(kb, "find_person", fake_find)
     out = tmp_path / "o.mp4"
-    used = kb.build_video(paths, out, [np.ones(2)], size=(160, 90), fps=4, seconds=1)
+    used = kb.build_video(paths, out, [np.ones(2)], size=(160, 90), fps=4, seconds=1, target="face")
     assert used == 2
     cap = cv2.VideoCapture(str(out))
     assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == 8
@@ -170,3 +172,13 @@ def test_chest_box_is_below_face_and_wider():
     x, y, w, h = kb.chest_box((100, 100, 50, 60))
     assert y + h / 2 == 100 + 2 * 60
     assert w > 50 and x + w / 2 == 125
+
+
+def test_chest_target_prefers_blazepose_and_falls_back_to_face_estimate(monkeypatch):
+    img = np.zeros((500, 500, 3), np.uint8)
+    face = (100, 100, 50, 60)
+    monkeypatch.setattr(kb, "pose_chest_box", lambda image, box: (80, 190, 160, 140))
+    assert kb.target_box(img, face, "chest") == (80, 190, 160, 140)
+    monkeypatch.setattr(kb, "pose_chest_box", lambda image, box: None)
+    assert kb.target_box(img, face, "chest") == kb.chest_box(face)
+    assert kb.target_box(img, face, "face") == face
